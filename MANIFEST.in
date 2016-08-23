@@ -1,0 +1,8 @@
+include RELEASE-VERSION
+include version.py
+include pavement.py
+include paver-minilib.zip
+include setup.py
+recursive-include dmf_sma *
+recursive-exclude dmf_sma *~
+recursive-exclude dmf_sma *.pyc

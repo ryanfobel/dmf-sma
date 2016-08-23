@@ -1,0 +1,10 @@
+RELEASE-VERSION
+*.egg-info
+*.pyc
+setup.py
+paver-minilib.zip
+dist/*
+*~
+.project
+.pydevproject
+.idea
