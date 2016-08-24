@@ -121,14 +121,14 @@ def feedback_results_series_list_to_velocity_summary_df(fb_results_series_list, 
     if len(df.index) and cache_path:
         if not velocity_cache_path.parent.isdir():
             velocity_cache_path.parent.makedirs_p()
-        df.to_csv(velocity_cache_path)
+        df.to_csv(velocity_cache_path, index_label='index')
 
         # update the cache info
         write_cache_info(cache_path)
     return df
 
 
-def fit_velocity_vs_force_and_find_outliers(dxdt, f):
+def fit_velocity_vs_force_and_find_outliers(f, dxdt):
     """
     Identify outliers in the data, where outliers are defined as
     residuals that are > 2 standard deviations from the mean.
@@ -138,7 +138,6 @@ def fit_velocity_vs_force_and_find_outliers(dxdt, f):
       dxdt (np.array):  drop velocity
       f (np.array):     applied electrostatic force
     """
-
     outliers_mask = np.zeros(dxdt.shape, dtype=bool)
     n_outliers = 0
     p, info = fit_velocity_vs_force(f, dxdt, full=True)
@@ -174,12 +173,12 @@ def find_saturation_force(dxdt, f):
         post_sat_mask[n:] = True
 
         p_pre, info_pre, outliers_mask_pre = \
-            fit_velocity_vs_force_and_find_outliers(dxdt[pre_sat_mask], f[pre_sat_mask])
+            fit_velocity_vs_force_and_find_outliers(f[pre_sat_mask], dxdt[pre_sat_mask])
         f_th_pre, k_df_pre = p_pre
         f_th_error_pre, k_df_error_pre = info_pre['perr']
 
         p_post, info_post, outliers_mask_post = \
-            fit_velocity_vs_force_and_find_outliers(dxdt[post_sat_mask], f[post_sat_mask])
+            fit_velocity_vs_force_and_find_outliers(f[post_sat_mask], dxdt[post_sat_mask])
         f_th_post, k_df_post = p_post
         f_th_error_post, k_df_error_post = info_post['perr']
 
@@ -209,25 +208,25 @@ def find_saturation_force(dxdt, f):
 
     # Re-fit the post-saturation data according to this new saturation value
     if len(ind_sat):
+        n = ind_sat[0] + 4
         pre_sat_mask = np.zeros(dxdt.shape, dtype=bool)
-        pre_sat_mask[:ind_sat[0]] = True
+        pre_sat_mask[:n] = True
 
         post_sat_mask = np.zeros(dxdt.shape, dtype=bool)
-        post_sat_mask[ind_sat[0]:] = True
+        post_sat_mask[n:] = True
 
         p_pre, info_pre, outliers_mask_pre = \
-            fit_velocity_vs_force_and_find_outliers(dxdt[pre_sat_mask], f[pre_sat_mask])
+            fit_velocity_vs_force_and_find_outliers(f[pre_sat_mask], dxdt[pre_sat_mask])
         f_th_pre, k_df_pre = p_pre
         f_th_error_pre, k_df_error_pre = info_pre['perr']
 
         p_post, info_post, outliers_mask_post = \
-            fit_velocity_vs_force_and_find_outliers(dxdt[post_sat_mask], f[post_sat_mask])
+            fit_velocity_vs_force_and_find_outliers(f[post_sat_mask], dxdt[post_sat_mask])
         f_th_post, k_df_post = p_post
         f_th_error_post, k_df_error_post = info_post['perr']
 
     # if we found a saturation index
     if len(ind_sat):
-        n = ind_sat[0] + 4
         outliers_mask = np.zeros(dxdt.shape, dtype=bool)
         outliers_mask[pre_sat_mask] = outliers_mask_pre
         outliers_mask[post_sat_mask] = outliers_mask_post
@@ -235,7 +234,7 @@ def find_saturation_force(dxdt, f):
     else:
         # fit all data (assuming no saturation)
         p_no_sat, info_no_sat, outliers_mask_no_sat = \
-            fit_velocity_vs_force_and_find_outliers(dxdt, f)
+            fit_velocity_vs_force_and_find_outliers(f, dxdt)
         return None, None, outliers_mask_no_sat
 
 
@@ -332,7 +331,7 @@ def fit_velocity_vs_force(f, dxdt, nonlin=False, full=False):
             return p
 
 
-def fit_parameters_to_velocity_data(velocity_df, eft, cache_path=None):
+def fit_parameters_to_velocity_data(velocity_df, eft=0.3, cache_path=None):
     df = pd.DataFrame()
     outliers_df = pd.DataFrame()
 
@@ -419,12 +418,12 @@ def fit_parameters_to_velocity_data(velocity_df, eft, cache_path=None):
     if cache_path:
         # save the outliers mask
         outliers_df.sort_index(inplace=True)
-        outliers_df.to_csv(outliers_path)
+        outliers_df.to_csv(outliers_path, index_label='index')
 
         # reorder columns and save the fitted parameters
         df = df[[u'step', u'time', u'f_th_linear', u'f_th_linear_error', u'k_df_linear',
                  u'k_df_linear_error', u'R2_linear', u'f_sat', u'f_th_mkt', u'f_th_mkt_error',
                  u'Lambda', u'Lambda_error', u'k0', u'k0_error', u'R2_mkt', u'max_sinh_arg']]
-        df.to_csv(fitted_params_path)
+        df.to_csv(fitted_params_path, index_label='index')
 
     return df, outliers_df
