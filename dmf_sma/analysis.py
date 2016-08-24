@@ -1,4 +1,4 @@
-'''
+"""
 Copyright 2014-2016 Ryan Fobel
 
 This file is part of liquid_calibration_plugin.
@@ -15,16 +15,38 @@ GNU General Public License for more details.
 
 You should have received a copy of the GNU General Public License
 along with test_plugin.  If not, see <http://www.gnu.org/licenses/>.
-'''
+"""
 
 import numpy as np
 import pandas as pd
 from matplotlib import mlab
 from scipy.optimize import curve_fit
+import pkg_resources
+from path_helpers import path
+import yaml
+import arrow
 
+from . import PACKAGE_NAME
 
 # Boltzmann constant
-K_B = 1.38064852e-23 # m2 kg s-2 K-1
+K_B = 1.38064852e-23  # m2 kg s-2 K-1
+CACHE_METADATA_FILE_NAME = '.cache-info'
+
+
+def check_cache(data_path):
+    cache_info_path = path(data_path.joinpath(CACHE_METADATA_FILE_NAME))
+    if cache_info_path.exists():
+        return yaml.load(cache_info_path.bytes())
+    else:
+        return None
+
+
+def write_cache_info(data_path):
+    cache_info_path = path(data_path.joinpath(CACHE_METADATA_FILE_NAME))
+    version = pkg_resources.get_distribution(PACKAGE_NAME).version
+    cache_info = {'package_name': PACKAGE_NAME, 'version': version, 'timestamp': str(arrow.utcnow())}
+    cache_info_path.write_bytes(yaml.dump(cache_info))
+
 
 def feedback_results_series_list_to_velocity_summary_df(fb_results_series_list, data_path):
     velocity_data_path = data_path.joinpath('velocity_summary_data.csv')
@@ -56,7 +78,7 @@ def feedback_results_series_list_to_velocity_summary_df(fb_results_series_list, 
              'window size': [],
              'dx': [],
              'dt': [],
-        }
+             }
 
         for j, data in enumerate(results.data):
             L = np.sqrt(data.area)
@@ -101,102 +123,137 @@ def feedback_results_series_list_to_velocity_summary_df(fb_results_series_list, 
         if not velocity_data_path.parent.isdir():
             velocity_data_path.parent.makedirs_p()
         df.to_csv(velocity_data_path)
+
+        # update the cache info
+        write_cache_info(data_path)
     return df
 
-def find_outliers(dxdt, f, n, r):
-    '''
+
+def fit_velocity_vs_force_and_find_outliers(dxdt, f):
+    """
     Identify outliers in the data, where outliers are defined as
-    residuals that are > 2 standard deviations from the mean
-    '''
-    sat_mask = np.zeros(dxdt.shape, dtype=bool)
-    sat_mask[n:] = True
+    residuals that are > 2 standard deviations from the mean.
+
+    Parameters
+    ----------
+      dxdt (np.array):  drop velocity
+      f (np.array):     applied electrostatic force
+    """
+
     outliers_mask = np.zeros(dxdt.shape, dtype=bool)
     n_outliers = 0
-    while True:
-        outliers_mask[~sat_mask] = \
-            abs(r[~sat_mask] / np.sqrt(np.mean(r[~sat_mask]**2))) > 2.0
-        outliers_mask[sat_mask] = \
-            abs(r[sat_mask] / np.sqrt(np.mean(r[sat_mask]**2))) > 2.0
+    p, info = fit_velocity_vs_force(f, dxdt, full=True)
 
+    while True:
+        # calculate the new outliers mask
+        outliers_mask[~outliers_mask] = abs(info['r'] / np.sqrt(np.mean(info['r'] ** 2))) > 2.0
+
+        # If the number of outliers has increased since the previous iteration,
+        # re-fit the data and recalculate the outlier mask
         if len(mlab.find(outliers_mask)) > n_outliers:
             n_outliers = len(mlab.find(outliers_mask))
 
-            # refit (excluding outliers)
-            mask = np.logical_and(~sat_mask, ~outliers_mask)
-            p, cov = np.polyfit(f[mask], dxdt[mask], 1, cov=True)
-            r[~sat_mask] = p[0]*f[~sat_mask] + p[1] - dxdt[~sat_mask]
-
-            mask = np.logical_and(sat_mask, ~outliers_mask)
-            p_sat, cov_sat = np.polyfit(f[mask], dxdt[mask], 1, cov=True)
-            r[sat_mask] = p_sat[0]*f[sat_mask] + p_sat[1] - dxdt[sat_mask]
+            # re-fit the data (excluding outliers)
+            p, info = fit_velocity_vs_force(f[~outliers_mask], dxdt[~outliers_mask], full=True)
         else:
-            return outliers_mask
+            return p, info, outliers_mask
+
 
 def find_saturation_force(dxdt, f):
+    """
+    Iterate through the data points by dividing it into 2 data sets
+    (i.e., pre-satuation and post-saturation) and fit a line to each data set.
+    Define the saturation force as the intersection between these two lines.
+    """
     f_sat = []
-    # Iterate through the data points by dividing it into 2 data sets
-    # pre-satuation and post-saturation and fit a line to each data set
-    for n in range(4, len(dxdt)-3):
-        sat_mask = np.zeros(dxdt.shape, dtype=bool)
-        sat_mask[n:] = True
 
-        # fit the pre-saturation data
-        p, cov = np.polyfit(f[~sat_mask], dxdt[~sat_mask], 1, cov=True)
-        r = np.zeros(dxdt.shape)
-        r[~sat_mask] = p[0] * f[~sat_mask] + p[1] - dxdt[~sat_mask]
+    for n in range(4, len(dxdt) - 3):
+        pre_sat_mask = np.zeros(dxdt.shape, dtype=bool)
+        pre_sat_mask[:n] = True
 
-        # fit the post-saturation data
-        p_sat, cov_sat = np.polyfit(f[sat_mask], dxdt[sat_mask], 1, cov=True)
-        r[sat_mask] = p[0] * f[sat_mask] + p[1] - dxdt[sat_mask]
+        post_sat_mask = np.zeros(dxdt.shape, dtype=bool)
+        post_sat_mask[n:] = True
 
-        outliers_mask = find_outliers(dxdt, f, n, r)
+        p_pre, info_pre, outliers_mask_pre = \
+            fit_velocity_vs_force_and_find_outliers(dxdt[pre_sat_mask], f[pre_sat_mask])
+        f_th_pre, k_df_pre = p_pre
+        f_th_error_pre, k_df_error_pre = info_pre['perr']
 
-        # fit all data (assuming no saturation)
-        p_no_sat, cov_no_sat = np.polyfit(f[~outliers_mask], dxdt[~outliers_mask], 1, cov=True)
-        r_no_sat = p_no_sat[0] * f + p_no_sat[1] - dxdt
+        p_post, info_post, outliers_mask_post = \
+            fit_velocity_vs_force_and_find_outliers(dxdt[post_sat_mask], f[post_sat_mask])
+        f_th_post, k_df_post = p_post
+        f_th_error_post, k_df_error_post = info_post['perr']
 
-        # The post-saturation data should have a higher k_df
-        # (k_df = 1. / p[0]). If the intersection of the two lines is a
-        # force > 0, append it to the f_sat list.
-        if p_sat[0] < p[0] and p[1] < p_sat[1]:
-            f_sat.append((p_sat[1] - p[1]) / (p[0] - p_sat[0]))
+        # find the intersection of the 2 lines
+        f_int = (f_th_pre * k_df_post - f_th_post * k_df_pre) / (k_df_post - k_df_pre)
+
+        if (f_int > 0 and k_df_pre > 0 and (k_df_post > 0 and k_df_post > k_df_pre) or
+                    k_df_post < 0):
+            # We expect the intersection of the line (i.e., f_sat) to be > 0 and k_df > 0.
+            # k_df_post should be greater than k_df_pre (i.e., more friction) if both are positive.
+            # k_df_post may also be negative if drops are slowing down with increasing force.
+            # If these conditions are met, append the intersection to the f_sat list.
+            f_sat.append(f_int)
         else:
             f_sat.append(np.nan)
 
-    f_sat = np.array(f_sat)
-    f_min = np.ma.masked_invalid(np.abs(f_sat - f[3:-4]))
-
+    # Each entry in the calculated f_sat array represents the intersection
+    # point of two lines (fit to the pre- and post-saturation data). Find
+    # the value in this array that is closest the to the force at the index
+    # n used in it's computation (i.e., the index used to divide the dataset
+    # into pre- and post-saturation values).
     ind_sat = []
-    if len(f_min) and False in f_min.mask:
-        ind_sat = mlab.find(f_min == np.min(f_min))
+    f_sat = np.array(f_sat)
+    diff = np.ma.masked_invalid(np.abs(f_sat - f[3:-4]))
+    if len(diff) and False in diff.mask:
+        ind_sat = mlab.find(diff == np.min(diff))
 
-    # if we found a saturation index and the relative difference in k_df
-    # is greater than our uncertainty in measuring it
-    if len(ind_sat) and (
-        np.abs((p[0] - p_sat[0]) / p[0]) >
-        np.sqrt(np.diag(cov))[0] / np.abs(p[0])
-    ):
+    # Re-fit the post-saturation data according to this new saturation value
+    if len(ind_sat):
+        pre_sat_mask = np.zeros(dxdt.shape, dtype=bool)
+        pre_sat_mask[:ind_sat[0]] = True
+
+        post_sat_mask = np.zeros(dxdt.shape, dtype=bool)
+        post_sat_mask[ind_sat[0]:] = True
+
+        p_pre, info_pre, outliers_mask_pre = \
+            fit_velocity_vs_force_and_find_outliers(dxdt[pre_sat_mask], f[pre_sat_mask])
+        f_th_pre, k_df_pre = p_pre
+        f_th_error_pre, k_df_error_pre = info_pre['perr']
+
+        p_post, info_post, outliers_mask_post = \
+            fit_velocity_vs_force_and_find_outliers(dxdt[post_sat_mask], f[post_sat_mask])
+        f_th_post, k_df_post = p_post
+        f_th_error_post, k_df_error_post = info_post['perr']
+
+    # if we found a saturation index
+    if len(ind_sat):
         n = ind_sat[0] + 4
-        return n, f_sat[ind_sat[0]], find_outliers(dxdt, f, n, r)
-    else:
         outliers_mask = np.zeros(dxdt.shape, dtype=bool)
-        if len(f_sat):
-            outliers_mask = \
-                abs(r_no_sat / np.sqrt(np.mean(r_no_sat**2))) > 2.0
-        return None, None, outliers_mask
+        outliers_mask[pre_sat_mask] = outliers_mask_pre
+        outliers_mask[post_sat_mask] = outliers_mask_post
+        return n, f_sat[ind_sat[0]], outliers_mask
+    else:
+        # fit all data (assuming no saturation)
+        p_no_sat, info_no_sat, outliers_mask_no_sat = \
+            fit_velocity_vs_force_and_find_outliers(dxdt, f)
+        return None, None, outliers_mask_no_sat
+
 
 def f_dxdt_mkt(f, f_th, Lambda, k0):
-    '''
+    """
     Drop velocity as a function of applied force f, threshold force f_th,
     Lambda, and k0 (parameters defined by the Molecular Kinetic Theory).
-    '''
-    return 2 * k0 * Lambda * np.sinh(Lambda**2 / (K_B * 293) * 1e3 * np.abs(f - f_th)) # T=20C=293K
+    """
+    return 2 * k0 * Lambda * np.sinh(Lambda ** 2 / (K_B * 293) * 1e3 * np.abs(f - f_th))  # T=20C=293K
+
 
 def f_dxdt_linear(f, f_th, k_df):
-    return 1. / k_df * np.abs(f - f_th)
+    return 1. / k_df * (f - f_th)
+
 
 def fit_velocity_vs_force(f, dxdt, nonlin=False, full=False):
-    '''
+    """
     Fit velocity vs force data.
 
     Parameters:
@@ -217,7 +274,7 @@ def fit_velocity_vs_force(f, dxdt, nonlin=False, full=False):
             (f_th, k_df) if nonlin is False.
         info: Dictionary containing error estimates, residuals, and R^2 values are returned.
             (only returned if full is set to True).
-    '''
+    """
 
     pcov = None
     try:
@@ -230,13 +287,13 @@ def fit_velocity_vs_force(f, dxdt, nonlin=False, full=False):
     if not nonlin:
         if full:
             r = dxdt - f_dxdt_linear(f, f_th, k_df)
-            R2 = 1 - np.sum(r**2) / (len(dxdt) * np.var(dxdt))
+            R2 = 1 - np.sum(r ** 2) / (len(dxdt) * np.var(dxdt))
             perr = (np.nan, np.nan)
 
             if pcov is not None:
                 # calculate uncertainties
-                f_th_error = np.sqrt(pcov[0, 0] / p[0]**2 +
-                                     pcov[1, 1] / p[1]**2 -
+                f_th_error = np.sqrt(pcov[0, 0] / p[0] ** 2 +
+                                     pcov[1, 1] / p[1] ** 2 -
                                      2 * pcov[0, 1] / np.prod(p)) * f_th
                 k_df_error = np.sqrt(np.diag(pcov))[0] / np.abs(p[0]) * k_df
                 perr = (f_th_error, k_df_error)
@@ -252,26 +309,29 @@ def fit_velocity_vs_force(f, dxdt, nonlin=False, full=False):
         b = 1.0 / np.max(f - f_th)
         a = (1 / k_df) / b
 
-        Lambda = np.sqrt((b / 1000 * (K_B * 293))) # m (T=20C=293K)
-        k0 = a / (2 * Lambda) # 1/s
+        Lambda = np.sqrt((b / 1000 * (K_B * 293)))  # m (T=20C=293K)
+        k0 = a / (2 * Lambda)  # 1/s
         try:
             p, pcov = curve_fit(f_dxdt_mkt, f, dxdt, p0=[f_th, Lambda, k0])
             p = np.abs(p)
             f_th, Lambda, k0 = p
             perr = np.sqrt(np.diag(pcov))
+            r = dxdt - f_dxdt_mkt(f, f_th, Lambda, k0)
+            R2 = 1 - np.sum(r ** 2) / (len(dxdt) * np.var(dxdt))
         except:
             p = np.nan * np.ones(3)
             perr = np.nan * np.ones(3)
+            r = np.nan * np.ones(len(dxdt))
+            R2 = np.nan
 
         if full:
-            r = dxdt - f_dxdt_mkt(f, f_th, Lambda, k0)
-            R2 = 1 - np.sum(r**2) / (len(dxdt) * np.var(dxdt))
             info = {'perr': perr,
                     'r': r,
                     'R2': R2}
             return p, info
         else:
             return p
+
 
 def fit_parameters_to_velocity_data(velocity_df, data_path, eft):
     fitted_params_path = data_path.joinpath('fitted_params.csv')
@@ -288,6 +348,7 @@ def fit_parameters_to_velocity_data(velocity_df, data_path, eft):
         outliers_df = pd.DataFrame()
 
     for (step_time, step), group in velocity_df.groupby(['time', 'step']):
+
         # if a row with this time already exists, skip it
         if ('time' in df.columns and
             len(df[df['time'] == step_time])):
@@ -301,17 +362,15 @@ def fit_parameters_to_velocity_data(velocity_df, data_path, eft):
         dxdt = np.array(group['peak velocity'].values,
                         dtype=np.float)[include_mask]
 
+        # if there's not enough data to fit, continue
+        if len(dxdt) < 2:
+            continue
+
         ind_sat, f_sat, outliers_mask = find_saturation_force(dxdt, f)
 
         if ind_sat:
             sat_mask = np.zeros(dxdt.shape, dtype=bool)
             sat_mask[ind_sat:] = True
-
-            mask = np.logical_and(sat_mask, ~outliers_mask)
-            # fit the post-saturation data
-            p_sat, cov_sat = np.polyfit(f[mask], dxdt[mask], 1,
-                                        cov=True)
-
             mask = np.logical_and(~sat_mask, ~outliers_mask)
         else:
             mask = ~outliers_mask
@@ -333,7 +392,7 @@ def fit_parameters_to_velocity_data(velocity_df, data_path, eft):
         # calculate the parameter estimates and uncertainties
         f_th_mkt, Lambda, k0 = p_mkt
         f_th_mkt_error, Lambda_error, k0_error = info_mkt['perr']
-        max_sinh_arg = Lambda**2 / (K_B * 293) * 1e3 * np.max(f[mask] - f_th_mkt) # T=20C=293K
+        max_sinh_arg = Lambda ** 2 / (K_B * 293) * 1e3 * np.max(f[mask] - f_th_mkt)  # T=20C=293K
 
         df = df.append({
             'step': step,
