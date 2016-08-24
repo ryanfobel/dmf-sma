@@ -33,28 +33,27 @@ K_B = 1.38064852e-23  # m2 kg s-2 K-1
 CACHE_METADATA_FILE_NAME = '.cache-info'
 
 
-def check_cache(data_path):
-    cache_info_path = path(data_path.joinpath(CACHE_METADATA_FILE_NAME))
+def check_cache(cache_path):
+    cache_info_path = path(cache_path.joinpath(CACHE_METADATA_FILE_NAME))
     if cache_info_path.exists():
         return yaml.load(cache_info_path.bytes())
     else:
         return None
 
 
-def write_cache_info(data_path):
-    cache_info_path = path(data_path.joinpath(CACHE_METADATA_FILE_NAME))
+def write_cache_info(cache_path):
+    cache_info_path = path(cache_path.joinpath(CACHE_METADATA_FILE_NAME))
     version = pkg_resources.get_distribution(PACKAGE_NAME).version
     cache_info = {'package_name': PACKAGE_NAME, 'version': version, 'timestamp': str(arrow.utcnow())}
     cache_info_path.write_bytes(yaml.dump(cache_info))
 
 
-def feedback_results_series_list_to_velocity_summary_df(fb_results_series_list, data_path):
-    velocity_data_path = data_path.joinpath('velocity_summary_data.csv')
-
-    if velocity_data_path.exists():
-        df = pd.read_csv(velocity_data_path, index_col=0)
-    else:
-        df = pd.DataFrame()
+def feedback_results_series_list_to_velocity_summary_df(fb_results_series_list, cache_path=None):
+    df = pd.DataFrame()
+    if cache_path:
+        velocity_cache_path = cache_path.joinpath('velocity_summary_data.csv')
+        if velocity_cache_path.exists():
+            df = pd.read_csv(velocity_cache_path, index_col=0)
 
     for (step_time, step_number, results) in fb_results_series_list:
         # skip steps that are already in the dataframe (as determined by their unique time index)
@@ -119,13 +118,13 @@ def feedback_results_series_list_to_velocity_summary_df(fb_results_series_list, 
             d['c_drop'].append(c_drop)
         df = df.append(pd.DataFrame(d), ignore_index=True)
 
-    if len(df.index):
-        if not velocity_data_path.parent.isdir():
-            velocity_data_path.parent.makedirs_p()
-        df.to_csv(velocity_data_path)
+    if len(df.index) and cache_path:
+        if not velocity_cache_path.parent.isdir():
+            velocity_cache_path.parent.makedirs_p()
+        df.to_csv(velocity_cache_path)
 
         # update the cache info
-        write_cache_info(data_path)
+        write_cache_info(cache_path)
     return df
 
 
@@ -333,19 +332,18 @@ def fit_velocity_vs_force(f, dxdt, nonlin=False, full=False):
             return p
 
 
-def fit_parameters_to_velocity_data(velocity_df, data_path, eft):
-    fitted_params_path = data_path.joinpath('fitted_params.csv')
+def fit_parameters_to_velocity_data(velocity_df, eft, cache_path=None):
+    df = pd.DataFrame()
+    outliers_df = pd.DataFrame()
 
-    if fitted_params_path.exists():
-        df = pd.read_csv(fitted_params_path, index_col=0)
-    else:
-        df = pd.DataFrame()
+    if cache_path:
+        fitted_params_path = cache_path.joinpath('fitted_params.csv')
+        if fitted_params_path.exists():
+            df = pd.read_csv(fitted_params_path, index_col=0)
 
-    outliers_path = data_path.joinpath('outliers.csv')
-    if outliers_path.exists():
-        outliers_df = pd.read_csv(outliers_path, index_col=0)
-    else:
-        outliers_df = pd.DataFrame()
+        outliers_path = cache_path.joinpath('outliers.csv')
+        if outliers_path.exists():
+            outliers_df = pd.read_csv(outliers_path, index_col=0)
 
     for (step_time, step), group in velocity_df.groupby(['time', 'step']):
 
@@ -418,13 +416,15 @@ def fit_parameters_to_velocity_data(velocity_df, data_path, eft):
         except KeyError:
             outliers_df = outliers_df.append(pd.DataFrame(data={'outlier': outliers_mask},
                                                           index=group.index[include_mask]))
-    # save the outliers mask
-    outliers_df.sort_index(inplace=True)
-    outliers_df.to_csv(outliers_path)
+    if cache_path:
+        # save the outliers mask
+        outliers_df.sort_index(inplace=True)
+        outliers_df.to_csv(outliers_path)
 
-    # reorder columns and save the fitted parameters
-    df = df[[u'step', u'time', u'f_th_linear', u'f_th_linear_error', u'k_df_linear',
-             u'k_df_linear_error', u'R2_linear', u'f_sat', u'f_th_mkt', u'f_th_mkt_error',
-             u'Lambda', u'Lambda_error', u'k0', u'k0_error', u'R2_mkt', u'max_sinh_arg']]
-    df.to_csv(fitted_params_path)
+        # reorder columns and save the fitted parameters
+        df = df[[u'step', u'time', u'f_th_linear', u'f_th_linear_error', u'k_df_linear',
+                 u'k_df_linear_error', u'R2_linear', u'f_sat', u'f_th_mkt', u'f_th_mkt_error',
+                 u'Lambda', u'Lambda_error', u'k0', u'k0_error', u'R2_mkt', u'max_sinh_arg']]
+        df.to_csv(fitted_params_path)
+
     return df, outliers_df
