@@ -413,10 +413,12 @@ def fit_parameters_to_velocity_data(velocity_df, eft=0.3, cache_path=None):
             post_sat_mask = np.logical_and(f > f_sat, ~outliers_mask)
             f_th_post_sat, k_df_post_sat = p_post
             f_th_post_sat_error, k_df_post_sat_error = info_post['perr']
+            R2_post_sat = info_post['R2']
         else:
             pre_sat_mask = ~outliers_mask
             f_th_post_sat, k_df_post_sat = None, None
             f_th_post_sat_error, k_df_post_sat_error = None, None
+            R2_post_sat = None
 
         # if there's not enough data to fit, continue
         if np.count_nonzero(pre_sat_mask) < 2:
@@ -457,6 +459,7 @@ def fit_parameters_to_velocity_data(velocity_df, eft=0.3, cache_path=None):
             'k_df_post_sat': k_df_post_sat,
             'f_th_post_sat_error': f_th_post_sat_error,
             'k_df_post_sat_error': k_df_post_sat_error,
+            'R2_post_sat': R2_post_sat,
         }, ignore_index=True)
 
         try:
@@ -471,8 +474,10 @@ def fit_parameters_to_velocity_data(velocity_df, eft=0.3, cache_path=None):
 
         # reorder columns and save the fitted parameters
         df = df[[u'step', u'time', u'f_th_linear', u'f_th_linear_error', u'k_df_linear',
-                 u'k_df_linear_error', u'R2_linear', u'f_sat', u'f_th_mkt', u'f_th_mkt_error',
-                 u'Lambda', u'Lambda_error', u'k0', u'k0_error', u'R2_mkt', u'max_sinh_arg']]
+                 u'k_df_linear_error', u'R2_linear', u'f_sat', u'f_th_post_sat',
+                 u'f_th_post_sat_error', u'k_df_post_sat', u'k_df_post_sat_error',
+                 u'R2_post_sat', u'f_th_mkt', u'f_th_mkt_error', u'Lambda', u'Lambda_error',
+                 u'k0', u'k0_error', u'R2_mkt', u'max_sinh_arg']]
         df.to_csv(fitted_params_path, index_label='index')
 
     return df, outliers_df
