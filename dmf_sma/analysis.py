@@ -157,13 +157,23 @@ def fit_velocity_vs_force_and_find_outliers(f, dxdt):
             return p, info, outliers_mask
 
 
-def find_saturation_force(dxdt, f):
+def find_saturation_force(f, dxdt):
     """
     Iterate through the data points by dividing it into 2 data sets
     (i.e., pre-satuation and post-saturation) and fit a line to each data set.
     Define the saturation force as the intersection between these two lines.
     """
     f_sat = []
+
+    # convert f and dxdt to numpy arrays (in the case they are a pandas.Series)
+    try:
+        f = f.values.flatten()
+    except AttributeError:
+        pass
+    try:
+        dxdt = dxdt.values.flatten()
+    except AttributeError:
+        pass
 
     for n in range(4, len(dxdt) - 3):
         pre_sat_mask = np.zeros(dxdt.shape, dtype=bool)
@@ -185,11 +195,17 @@ def find_saturation_force(dxdt, f):
         # find the intersection of the 2 lines
         f_int = (f_th_pre * k_df_post - f_th_post * k_df_pre) / (k_df_post - k_df_pre)
 
-        if (f_int > 0 and k_df_pre > 0 and (k_df_post > 0 and k_df_post > k_df_pre) or
-                    k_df_post < 0):
-            # We expect the intersection of the line (i.e., f_sat) to be > 0 and k_df > 0.
-            # k_df_post should be greater than k_df_pre (i.e., more friction) if both are positive.
-            # k_df_post may also be negative if drops are slowing down with increasing force.
+        # k_df_pre should be positive (shouldn't have negative friction pre-saturation).
+        if (k_df_pre > 0 and
+                # k_df_post should also be greater than k_df_pre (i.e., higher friction) if
+                # both are positive; alternatively, k_df_post may be negative (if drops are
+                # slowing down as the applied force is increased).
+                ((k_df_post > 0 and k_df_post > k_df_pre) or k_df_post < 0) and
+
+                # We also expect the intersection of the two lines (pre and post) to occur
+                # at a force that is between the two groups.
+                (f[n - 1] < f_int < f[n])):
+
             # If these conditions are met, append the intersection to the f_sat list.
             f_sat.append(f_int)
         else:
@@ -230,12 +246,12 @@ def find_saturation_force(dxdt, f):
         outliers_mask = np.zeros(dxdt.shape, dtype=bool)
         outliers_mask[pre_sat_mask] = outliers_mask_pre
         outliers_mask[post_sat_mask] = outliers_mask_post
-        return n, f_sat[ind_sat[0]], outliers_mask
+        return f_sat[ind_sat[0]], p_pre, info_pre, p_post, info_post, outliers_mask
     else:
         # fit all data (assuming no saturation)
         p_no_sat, info_no_sat, outliers_mask_no_sat = \
             fit_velocity_vs_force_and_find_outliers(f, dxdt)
-        return None, None, outliers_mask_no_sat
+        return None, p_no_sat, info_no_sat, None, None, outliers_mask_no_sat
 
 
 def f_dxdt_mkt(f, f_th, Lambda, k0):
@@ -348,7 +364,7 @@ def fit_parameters_to_velocity_data(velocity_df, eft=0.3, cache_path=None):
 
         # if a row with this time already exists, skip it
         if ('time' in df.columns and
-            len(df[df['time'] == step_time])):
+                len(df[df['time'] == step_time])):
             continue
 
         L = np.sqrt(group['area'].values)
@@ -363,33 +379,38 @@ def fit_parameters_to_velocity_data(velocity_df, eft=0.3, cache_path=None):
         if len(dxdt) < 2:
             continue
 
-        ind_sat, f_sat, outliers_mask = find_saturation_force(dxdt, f)
+        # try to find the saturation force
+        f_sat, p_pre, info_pre, p_post, info_post, outliers_mask = find_saturation_force(f, dxdt)
 
-        if ind_sat:
-            sat_mask = np.zeros(dxdt.shape, dtype=bool)
-            sat_mask[ind_sat:] = True
-            mask = np.logical_and(~sat_mask, ~outliers_mask)
+        if f_sat:
+            pre_sat_mask = np.logical_and(f < f_sat, ~outliers_mask)
+            post_sat_mask = np.logical_and(f > f_sat, ~outliers_mask)
+            f_th_post_sat, k_df_post_sat = p_post
+            f_th_post_sat_error, k_df_post_sat_error = info_post['perr']
         else:
-            mask = ~outliers_mask
+            pre_sat_mask = ~outliers_mask
+            f_th_post_sat, k_df_post_sat = None, None
+            f_th_post_sat_error, k_df_post_sat_error = None, None
+
+        print f_sat, np.count_nonzero(pre_sat_mask)
 
         # if there's not enough data to fit, continue
-        if len(mask) < 2:
+        if np.count_nonzero(pre_sat_mask) < 2:
             continue
 
-        # fit the pre-saturation data
-        p, info = fit_velocity_vs_force(f[mask], dxdt[mask], full=True)
-
         # calculate the parameter estimates and uncertainties
-        f_th, k_df = p
-        f_th_error, k_df_error = info['perr']
+        f_th, k_df = p_pre
+        f_th_error, k_df_error = info_pre['perr']
 
         # fit the MKT model to the pre-saturation data
-        p_mkt, info_mkt = fit_velocity_vs_force(f[mask], dxdt[mask], nonlin=True, full=True)
+        p_mkt, info_mkt = fit_velocity_vs_force(f[pre_sat_mask],
+                                                dxdt[pre_sat_mask], nonlin=True, full=True)
 
         # calculate the parameter estimates and uncertainties
         f_th_mkt, Lambda, k0 = p_mkt
         f_th_mkt_error, Lambda_error, k0_error = info_mkt['perr']
-        max_sinh_arg = Lambda ** 2 / (K_B * 293) * 1e3 * np.max(f[mask] - f_th_mkt)  # T=20C=293K
+        max_sinh_arg = (Lambda ** 2 / (K_B * 293) * 1e3 *
+                        np.max(f[pre_sat_mask] - f_th_mkt))  # T=20C=293K
 
         df = df.append({
             'step': step,
@@ -398,7 +419,7 @@ def fit_parameters_to_velocity_data(velocity_df, eft=0.3, cache_path=None):
             'f_th_linear_error': f_th_error,
             'k_df_linear': k_df * 1e3,
             'k_df_linear_error': k_df_error * 1e3,
-            'R2_linear': info['R2'],
+            'R2_linear': info_pre['R2'],
             'f_sat': f_sat,
             'f_th_mkt': f_th_mkt,
             'f_th_mkt_error': f_th_mkt_error,
@@ -408,6 +429,10 @@ def fit_parameters_to_velocity_data(velocity_df, eft=0.3, cache_path=None):
             'k0_error': k0_error,
             'R2_mkt': info_mkt['R2'],
             'max_sinh_arg': max_sinh_arg,
+            'f_th_post_sat': f_th_post_sat,
+            'k_df_post_sat': k_df_post_sat,
+            'f_th_post_sat_error': f_th_post_sat_error,
+            'k_df_post_sat_error': k_df_post_sat_error,
         }, ignore_index=True)
 
         try:
