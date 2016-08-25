@@ -224,7 +224,11 @@ def find_saturation_force(f, dxdt, z_score=2.0, max_pct_outliers=.25):
 
                 # We also expect the intersection of the two lines (pre and post) to occur
                 # at a force that is between the two groups.
-                (f[n - 1] < f_int < f[n])):
+                (f[n - 1] < f_int < f[n]) and
+
+                # Finally, the difference in the slope between the two lines should be
+                # greater than our uncertainty in measurement.
+                np.abs(k_df_pre - k_df_post) > k_df_error_pre):
 
             # If these conditions are met, append the intersection to the f_sat list.
             f_sat.append(f_int)
@@ -373,7 +377,8 @@ def fit_velocity_vs_force(f, dxdt, nonlin=False, full=False):
             return p
 
 
-def fit_parameters_to_velocity_data(velocity_df, eft=0.3, cache_path=None):
+def fit_parameters_to_velocity_data(velocity_df, eft=0.3, z_score=2.0,
+                                    max_pct_outliers=.25, cache_path=None):
     df = pd.DataFrame()
     outliers_df = pd.DataFrame()
 
@@ -406,7 +411,8 @@ def fit_parameters_to_velocity_data(velocity_df, eft=0.3, cache_path=None):
             continue
 
         # try to find the saturation force
-        f_sat, p_pre, info_pre, p_post, info_post, outliers_mask = find_saturation_force(f, dxdt)
+        f_sat, p_pre, info_pre, p_post, info_post, outliers_mask = \
+            find_saturation_force(f, dxdt, z_score, max_pct_outliers)
 
         if f_sat:
             pre_sat_mask = np.logical_and(f < f_sat, ~outliers_mask)
@@ -424,7 +430,7 @@ def fit_parameters_to_velocity_data(velocity_df, eft=0.3, cache_path=None):
         if np.count_nonzero(pre_sat_mask) < 2:
             continue
 
-        # calculate the parameter estimates and uncertainties
+        # extract the pre-saturation parameter estimates and uncertainties
         f_th, k_df = p_pre
         f_th_error, k_df_error = info_pre['perr']
 
