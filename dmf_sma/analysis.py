@@ -128,23 +128,41 @@ def feedback_results_series_list_to_velocity_summary_df(fb_results_series_list, 
     return df
 
 
-def fit_velocity_vs_force_and_find_outliers(f, dxdt):
+def fit_velocity_vs_force_and_find_outliers(f, dxdt, z_score=2.0, max_pct_outliers=.25):
     """
-    Identify outliers in the data, where outliers are defined as
-    residuals that are > 2 standard deviations from the mean.
+    Identify outliers in the data, where outliers are defined as residuals
+    that are > 2 standard deviations from the mean of all remaining residuals.
 
     Parameters
     ----------
       dxdt (np.array):  drop velocity
       f (np.array):     applied electrostatic force
+      z_score (float):  z-score used to identify outlier points
+                        (residual / rms of remaining residuals).
+                        The default is 2.0.
+      max_pct_outliers
+        (float):        Maximum percentage of the data points that
+                        may be considered as outliers. The default
+                        is .25 (25%).
+
     """
     outliers_mask = np.zeros(dxdt.shape, dtype=bool)
     n_outliers = 0
     p, info = fit_velocity_vs_force(f, dxdt, full=True)
 
     while True:
-        # calculate the new outliers mask
-        outliers_mask[~outliers_mask] = abs(info['r'] / np.sqrt(np.mean(info['r'] ** 2))) > 2.0
+        # Update the outliers mask
+        outliers_mask_update = np.abs(info['r'] / (
+            np.sqrt((np.sum(info['r']**2) - info['r']**2) / len(info['r'])))) > z_score
+
+        # Make sure we keep at least 4 data points (so that we can still fit a line
+        # and maintain some information about magnitude of the the residuals).
+        if (np.count_nonzero(~outliers_mask_update) >= 4 and
+            # Also set a condition to not throw away more than a certain percentage of
+            # our data.
+            np.count_nonzero(~outliers_mask_update) / float(len(f)) >= (1.0 - max_pct_outliers)):
+
+            outliers_mask[~outliers_mask] = outliers_mask_update
 
         # If the number of outliers has increased since the previous iteration,
         # re-fit the data and recalculate the outlier mask
@@ -157,7 +175,7 @@ def fit_velocity_vs_force_and_find_outliers(f, dxdt):
             return p, info, outliers_mask
 
 
-def find_saturation_force(f, dxdt):
+def find_saturation_force(f, dxdt, z_score=2.0, max_pct_outliers=.25):
     """
     Iterate through the data points by dividing it into 2 data sets
     (i.e., pre-satuation and post-saturation) and fit a line to each data set.
@@ -183,12 +201,14 @@ def find_saturation_force(f, dxdt):
         post_sat_mask[n:] = True
 
         p_pre, info_pre, outliers_mask_pre = \
-            fit_velocity_vs_force_and_find_outliers(f[pre_sat_mask], dxdt[pre_sat_mask])
+            fit_velocity_vs_force_and_find_outliers(f[pre_sat_mask], dxdt[pre_sat_mask],
+                                                    z_score, max_pct_outliers)
         f_th_pre, k_df_pre = p_pre
         f_th_error_pre, k_df_error_pre = info_pre['perr']
 
         p_post, info_post, outliers_mask_post = \
-            fit_velocity_vs_force_and_find_outliers(f[post_sat_mask], dxdt[post_sat_mask])
+            fit_velocity_vs_force_and_find_outliers(f[post_sat_mask], dxdt[post_sat_mask],
+                                                    z_score, max_pct_outliers)
         f_th_post, k_df_post = p_post
         f_th_error_post, k_df_error_post = info_post['perr']
 
@@ -232,12 +252,14 @@ def find_saturation_force(f, dxdt):
         post_sat_mask[n:] = True
 
         p_pre, info_pre, outliers_mask_pre = \
-            fit_velocity_vs_force_and_find_outliers(f[pre_sat_mask], dxdt[pre_sat_mask])
+            fit_velocity_vs_force_and_find_outliers(f[pre_sat_mask], dxdt[pre_sat_mask],
+                                                    z_score, max_pct_outliers)
         f_th_pre, k_df_pre = p_pre
         f_th_error_pre, k_df_error_pre = info_pre['perr']
 
         p_post, info_post, outliers_mask_post = \
-            fit_velocity_vs_force_and_find_outliers(f[post_sat_mask], dxdt[post_sat_mask])
+            fit_velocity_vs_force_and_find_outliers(f[post_sat_mask], dxdt[post_sat_mask],
+                                                    z_score, max_pct_outliers)
         f_th_post, k_df_post = p_post
         f_th_error_post, k_df_error_post = info_post['perr']
 
@@ -250,7 +272,7 @@ def find_saturation_force(f, dxdt):
     else:
         # fit all data (assuming no saturation)
         p_no_sat, info_no_sat, outliers_mask_no_sat = \
-            fit_velocity_vs_force_and_find_outliers(f, dxdt)
+            fit_velocity_vs_force_and_find_outliers(f, dxdt, z_score, max_pct_outliers)
         return None, p_no_sat, info_no_sat, None, None, outliers_mask_no_sat
 
 
@@ -263,6 +285,10 @@ def f_dxdt_mkt(f, f_th, Lambda, k0):
 
 
 def f_dxdt_linear(f, f_th, k_df):
+    """
+    Drop velocity as a function of applied force f, threshold force f_th,
+    and dynamic friction coefficient.
+    """
     return 1. / k_df * (f - f_th)
 
 
@@ -391,8 +417,6 @@ def fit_parameters_to_velocity_data(velocity_df, eft=0.3, cache_path=None):
             pre_sat_mask = ~outliers_mask
             f_th_post_sat, k_df_post_sat = None, None
             f_th_post_sat_error, k_df_post_sat_error = None, None
-
-        print f_sat, np.count_nonzero(pre_sat_mask)
 
         # if there's not enough data to fit, continue
         if np.count_nonzero(pre_sat_mask) < 2:
