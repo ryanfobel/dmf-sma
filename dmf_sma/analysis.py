@@ -85,7 +85,7 @@ def feedback_results_series_list_to_velocity_summary_df(fb_results_series_list, 
             d['time'] = step_time
             d['channel'].append(results.x[j])
             d['voltage'].append(np.mean(data.V_actuation()))
-            d['force'].append(np.mean(data.force(Ly=1.0)))
+            d['force'].append(np.mean(data.force(Ly=1.0)) * 1e6) # uN/mm
             d['frequency'].append(data.frequency)
             d['area'].append(data.area)
 
@@ -98,10 +98,10 @@ def feedback_results_series_list_to_velocity_summary_df(fb_results_series_list, 
             dx = 0
             dt = 0
             if velocity_results:
-                mean_velocity = velocity_results['p'][0]
+                mean_velocity = velocity_results['p'][0] * 1e3
 
                 dx = velocity_results['dx']
-                dt = velocity_results['dt']
+                dt = velocity_results['dt'] * 1e-3 # convert to seconds
 
                 order = None
                 if window_size and window_size < len(data.time) / 2 and window_size > 3:
@@ -109,13 +109,13 @@ def feedback_results_series_list_to_velocity_summary_df(fb_results_series_list, 
 
                 t, dxdt = data.dxdt(filter_order=order, Lx=L)
                 dxdt = np.ma.masked_invalid(dxdt)
-                peak_velocity = np.max(dxdt)
+                peak_velocity = np.max(dxdt) * 1e3
 
-            d['dx'].append(dx)
-            d['dt'].append(dt)
-            d['mean velocity'].append(mean_velocity)
-            d['peak velocity'].append(peak_velocity)
-            d['c_drop'].append(c_drop)
+            d['dx'].append(dx) # mm
+            d['dt'].append(dt) # s
+            d['mean velocity'].append(mean_velocity) # mm/s
+            d['peak velocity'].append(peak_velocity) # mm/s
+            d['c_drop'].append(c_drop) # pF/mm^2
         df = df.append(pd.DataFrame(d), ignore_index=True)
 
     if len(df.index) and cache_path:
@@ -135,8 +135,8 @@ def fit_velocity_vs_force_and_find_outliers(f, dxdt, z_score=2.0, max_pct_outlie
 
     Parameters
     ----------
-      dxdt (np.array):  drop velocity
-      f (np.array):     applied electrostatic force
+      dxdt (np.array):  drop velocity (mm/s)
+      f (np.array):     applied electrostatic force (uN/mm)
       z_score (float):  z-score used to identify outlier points
                         (residual / rms of remaining residuals).
                         The default is 2.0.
@@ -183,6 +183,12 @@ def find_saturation_force(f, dxdt, z_score=2.0, max_pct_outliers=.25):
     """
     f_sat = []
 
+    # require at least 3 data points in each group (pre- and post-saturation)
+    min_points_per_group = 3
+
+    # relative difference in k_df pre- and post-saturation to count as a saturation event.
+    delta_k_df = .2
+
     # convert f and dxdt to numpy arrays (in the case they are a pandas.Series)
     try:
         f = f.values.flatten()
@@ -193,7 +199,7 @@ def find_saturation_force(f, dxdt, z_score=2.0, max_pct_outliers=.25):
     except AttributeError:
         pass
 
-    for n in range(4, len(dxdt) - 3):
+    for n in range(min_points_per_group + 1, len(dxdt) - min_points_per_group):
         pre_sat_mask = np.zeros(dxdt.shape, dtype=bool)
         pre_sat_mask[:n] = True
 
@@ -222,13 +228,18 @@ def find_saturation_force(f, dxdt, z_score=2.0, max_pct_outliers=.25):
                 # slowing down as the applied force is increased).
                 ((k_df_post > 0 and k_df_post > k_df_pre) or k_df_post < 0) and
 
-                # We also expect the intersection of the two lines (pre and post) to occur
-                # at a force that is between the two groups.
-                (f[n - 1] < f_int < f[n]) and
+                # We also expect the intersection of the two lines (pre- and post) to occur
+                # between the min and max force applied.
+                (f[min_points_per_group] < f_int < f[-1 - min_points_per_group]) and
 
-                # Finally, the difference in the slope between the two lines should be
+                # The difference in the slope between the two lines should be
                 # greater than our uncertainty in measurement.
-                np.abs(k_df_pre - k_df_post) > k_df_error_pre):
+                not np.isnan(k_df_error_pre) and np.abs(k_df_pre - k_df_post) > k_df_error_pre and
+
+                # Finally, only count this as a saturation event if the k_df_post is negative
+                # or if the relative difference in k_df_pre and k_df_post is above some
+                # threshold (delta_k_df)
+                (k_df_post < 0 or (k_df_post - k_df_pre) / k_df_pre > delta_k_df)):
 
             # If these conditions are met, append the intersection to the f_sat list.
             f_sat.append(f_int)
@@ -242,7 +253,7 @@ def find_saturation_force(f, dxdt, z_score=2.0, max_pct_outliers=.25):
     # into pre- and post-saturation values).
     ind_sat = []
     f_sat = np.array(f_sat)
-    diff = np.ma.masked_invalid(np.abs(f_sat - f[3:-4]))
+    diff = np.ma.masked_invalid(np.abs(f_sat - f[min_points_per_group:-1-min_points_per_group]))
     if len(diff) and False in diff.mask:
         ind_sat = mlab.find(diff == np.min(diff))
 
@@ -301,9 +312,9 @@ def fit_velocity_vs_force(f, dxdt, nonlin=False, full=False):
     Fit velocity vs force data.
 
     Parameters:
-        f: array of floats
+        f: array of floats (uN/mm)
             Applied forces.
-        dxdt: array of floats
+        dxdt: array of floats (mm/s)
             Drop velocities.
         nonlin: bool, optional
             If true, apply a nonlinear (hyperbolic sine function) according to the
@@ -449,8 +460,8 @@ def fit_parameters_to_velocity_data(velocity_df, eft=0.3, z_score=2.0,
             'time': step_time,
             'f_th_linear': f_th,
             'f_th_linear_error': f_th_error,
-            'k_df_linear': k_df * 1e3,
-            'k_df_linear_error': k_df_error * 1e3,
+            'k_df_linear': k_df,
+            'k_df_linear_error': k_df_error,
             'R2_linear': info_pre['R2'],
             'f_sat': f_sat,
             'f_th_mkt': f_th_mkt,
@@ -462,8 +473,8 @@ def fit_parameters_to_velocity_data(velocity_df, eft=0.3, z_score=2.0,
             'R2_mkt': info_mkt['R2'],
             'max_sinh_arg': max_sinh_arg,
             'f_th_post_sat': f_th_post_sat,
-            'k_df_post_sat': k_df_post_sat,
             'f_th_post_sat_error': f_th_post_sat_error,
+            'k_df_post_sat': k_df_post_sat,
             'k_df_post_sat_error': k_df_post_sat_error,
             'R2_post_sat': R2_post_sat,
         }, ignore_index=True)
@@ -486,4 +497,6 @@ def fit_parameters_to_velocity_data(velocity_df, eft=0.3, z_score=2.0,
                  u'k0', u'k0_error', u'R2_mkt', u'max_sinh_arg']]
         df.to_csv(fitted_params_path, index_label='index')
 
+        # update the cache info
+        write_cache_info(cache_path)
     return df, outliers_df
