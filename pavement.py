@@ -1,7 +1,7 @@
 import sys
 
 from paver.setuputils import install_distutils_tasks
-from paver.easy import task, needs, options
+from paver.easy import task, needs, options, sh
 
 sys.path.insert(0, '.')
 import version
@@ -38,7 +38,13 @@ options(
 
 
 @task
-@needs('generate_setup', 'minilib', 'setuptools.command.sdist')
+def nosetests():
+    nose_options = '-v'
+    sh('nosetests %s' % nose_options)\
+
+
+@task
+@needs('generate_setup', 'minilib', 'setuptools.command.sdist', 'nosetests')
 def sdist():
     """Override sdist to make sure that our setup.py is generated."""
     pass
