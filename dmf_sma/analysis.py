@@ -388,24 +388,50 @@ def fit_velocity_vs_force(f, dxdt, nonlin=False, full=False):
 
 
 def fit_parameters_to_velocity_data(velocity_df, eft=0.3, z_score=2.0,
-                                    max_pct_outliers=.25, cache_path=None):
-    df = pd.DataFrame()
+                                    max_pct_outliers=.25, cache_path=None, force_refit=False):
+    """
+    Fit parameters to velocity vs force data, including finding the saturation force
+    and identifying any outliers.
+
+    Parameters:
+        velocity_df: pandas.DataFrame containing force/velocity data.
+        eft: (float) electrode fraction threshold. This parameter deterimines the distance
+            a drop must translate (as a fraction of the full electrode width) in order to
+            be included in further analysis. Default is 0.3.
+        z_score: (float) Z-score used for detecting outliers. Default is 2.0.
+        max_pct_outliers: (float) Upper threshold on the percentage of data to be considered
+            as potential outliers. Default is 0.25 (25%).
+        cache_path: (string) path to a directory in which to cache fitted data. If None, don't
+            use any cache.
+        force_refit: (bool) flag to overwrite any data in the cache. Default is False.
+
+    Returns:
+        fitted_params_df: pandas.DataFrame containing various fit paramters (f_th_linear,
+            f_th_linear_error, k_df_linear, k_df_linear_error, R2_linear, f_sat, f_th_post_sat,
+            f_th_post_sat_error, k_df_post_sat, k_df_post_sat_error, R2_post_sat, f_th_mkt,
+            f_th_mkt_error, Lambda, Lambda_error, k0, k0_error, R2_mkt, max_sinh_arg). Each set
+            of fit parameters is also indexed to a unique combination of 'step' and 'time'.
+        outliers_df: Mask of whether or not each velocity data point is considered an outlier.
+            Indices corresponds to those in the input velocity_df.
+    """
+
+    fitted_params_df = pd.DataFrame()
     outliers_df = pd.DataFrame()
 
     if cache_path:
         fitted_params_path = cache_path.joinpath('fitted_params.csv')
-        if fitted_params_path.exists():
-            df = pd.read_csv(fitted_params_path, index_col=0)
+        if fitted_params_path.exists() and not force_refit:
+            fitted_params_df = pd.read_csv(fitted_params_path, index_col=0)
 
         outliers_path = cache_path.joinpath('outliers.csv')
-        if outliers_path.exists():
+        if outliers_path.exists() and not force_refit:
             outliers_df = pd.read_csv(outliers_path, index_col=0)
 
     for (step_time, step), group in velocity_df.groupby(['time', 'step']):
 
         # if a row with this time already exists, skip it
-        if ('time' in df.columns and
-                len(df[df['time'] == step_time])):
+        if ('time' in fitted_params_df.columns and
+                len(fitted_params_df[fitted_params_df['time'] == step_time])):
             continue
 
         L = np.sqrt(group['area'].values)
@@ -454,7 +480,7 @@ def fit_parameters_to_velocity_data(velocity_df, eft=0.3, z_score=2.0,
         max_sinh_arg = (Lambda ** 2 / (K_B * 293) * 1e3 *
                         np.max(f[pre_sat_mask] - f_th_mkt))  # T=20C=293K
 
-        df = df.append({
+        fitted_params_df = fitted_params_df.append({
             'step': step,
             'time': step_time,
             'f_th_linear': f_th,
@@ -489,13 +515,14 @@ def fit_parameters_to_velocity_data(velocity_df, eft=0.3, z_score=2.0,
         outliers_df.to_csv(outliers_path, index_label='index')
 
         # reorder columns and save the fitted parameters
-        df = df[[u'step', u'time', u'f_th_linear', u'f_th_linear_error', u'k_df_linear',
-                 u'k_df_linear_error', u'R2_linear', u'f_sat', u'f_th_post_sat',
-                 u'f_th_post_sat_error', u'k_df_post_sat', u'k_df_post_sat_error',
-                 u'R2_post_sat', u'f_th_mkt', u'f_th_mkt_error', u'Lambda', u'Lambda_error',
-                 u'k0', u'k0_error', u'R2_mkt', u'max_sinh_arg']]
-        df.to_csv(fitted_params_path, index_label='index')
+        fitted_params_df = fitted_params_df[[u'step', u'time', u'f_th_linear', u'f_th_linear_error',
+                                             u'k_df_linear', u'k_df_linear_error', u'R2_linear',
+                                             u'f_sat', u'f_th_post_sat', u'f_th_post_sat_error',
+                                             u'k_df_post_sat', u'k_df_post_sat_error', u'R2_post_sat',
+                                             u'f_th_mkt', u'f_th_mkt_error', u'Lambda', u'Lambda_error',
+                                             u'k0', u'k0_error', u'R2_mkt', u'max_sinh_arg']]
+        fitted_params_df.to_csv(fitted_params_path, index_label='index')
 
         # update the cache info
         write_cache_info(cache_path)
-    return df, outliers_df
+    return fitted_params_df, outliers_df
