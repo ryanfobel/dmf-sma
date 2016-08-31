@@ -152,8 +152,7 @@ def fit_velocity_vs_force_and_find_outliers(f, dxdt, z_score=2.0, max_pct_outlie
 
     while True:
         # Update the outliers mask
-        outliers_mask_update = np.abs(info['r'] / (
-            np.sqrt((np.sum(info['r']**2) - info['r']**2) / len(info['r'])))) > z_score
+        outliers_mask_update = np.abs(info['r'] / np.sqrt(np.mean(info['r']**2))) > z_score
 
         # Make sure we keep at least 4 data points (so that we can still fit a line
         # and maintain some information about magnitude of the the residuals).
