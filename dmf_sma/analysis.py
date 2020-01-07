@@ -1,22 +1,3 @@
-"""
-Copyright 2014-2016 Ryan Fobel
-
-This file is part of liquid_calibration_plugin.
-
-test_plugin is free software: you can redistribute it and/or modify
-it under the terms of the GNU General Public License as published by
-the Free Software Foundation, either version 3 of the License, or
-(at your option) any later version.
-
-dmf_control_board is distributed in the hope that it will be useful,
-but WITHOUT ANY WARRANTY; without even the implied warranty of
-MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-GNU General Public License for more details.
-
-You should have received a copy of the GNU General Public License
-along with test_plugin.  If not, see <http://www.gnu.org/licenses/>.
-"""
-
 import numpy as np
 import pandas as pd
 from matplotlib import mlab
@@ -103,11 +84,7 @@ def feedback_results_series_list_to_velocity_summary_df(fb_results_series_list, 
                 dx = velocity_results['dx']
                 dt = velocity_results['dt'] * 1e-3 # convert to seconds
 
-                order = None
-                if window_size and window_size < len(data.time) / 2 and window_size > 3:
-                    order = 3
-
-                t, dxdt = data.dxdt(filter_order=order, Lx=L)
+                t, dxdt = data.dxdt(filter_order=3, Lx=L)
                 dxdt = np.ma.masked_invalid(dxdt)
                 peak_velocity = np.max(dxdt) * 1e3
 

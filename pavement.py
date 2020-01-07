@@ -30,10 +30,11 @@ options(
                author=properties['author'],
                url=properties['url'],
                version=properties['version'],
-               install_requires=['numpy', 'pandas', 'path-helpers>=0.2'],
+               install_requires=['numpy', 'pandas', 'path-helpers>=0.2',
+                                 'sympy', 'matplotlib'],
                # Install data listed in `MANIFEST.in`
                include_package_data=True,
-               license='GPLv2',
+               license='BSD-3-Clause',
                packages=[properties['package_name']]))
 
 
